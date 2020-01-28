@@ -28,6 +28,9 @@ For example,
 
 downloads a map of Japan.
 
+If the coordinates are negative, use `--from=-12.34,56.78 --to=-13.45,57.89`
+
+
 # tmssplit
 Split a large GeoTIFF image into tiles for a Tile Map Server.
 
