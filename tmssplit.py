@@ -51,8 +51,9 @@ def transform_tile(imgdata, invmatrix, crs,
         newimgdata[b] = np.clip(newband, 0, 255)
 
     newim = Image.fromarray(np.rollaxis(newimgdata, 0, 3).astype('uint8'))
-    newim.save(os.path.join(
-        dirname, outname.format(x=corner_x, y=corner_y, z=zoom)))
+    outpath = os.path.join(dirname, outname.format(x=corner_x, y=corner_y, z=zoom))
+    os.makedirs(os.path.dirname(outpath), exist_ok=True)
+    newim.save(outpath)
 
 
 def split_tile(imgfile, dirname, outname, zoom, size, proj=None, threads=None):
