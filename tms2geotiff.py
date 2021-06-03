@@ -47,40 +47,48 @@ def is_black(im):
             return False
     return True
 
-def stitch_tiles(tiles, corners, x0, y0, x1, y1):
-    bbox = (math.floor(x0), math.floor(y0), math.ceil(x1), math.ceil(y1))
+def paste_tile(bigim, base_size, tile, corner_xy, bbox):
+    im = Image.open(io.BytesIO(tile))
+    mode = 'RGB' if im.mode == 'RGB' else 'RGBA'
+    size = im.size
+    if bigim is None:
+        base_size[0] = size[0]
+        base_size[1] = size[1]
+        newim = Image.new(mode, (
+            size[0]*(bbox[2]-bbox[0]), size[1]*(bbox[3]-bbox[1])))
+    else:
+        newim = bigim
+
+    dx = abs(corner_xy[0] - bbox[0])
+    dy = abs(corner_xy[1] - bbox[1])
+    xy0 = (size[0]*dx, size[1]*dy)
+    if mode == 'RGB':
+        newim.paste(im, xy0)
+    else:
+        if im.mode != mode:
+            im = im.convert(mode)
+        if is_black(im):
+            newimdraw = ImageDraw.Draw(newim)
+            newimdraw.rectangle(
+                (xy0, (xy0[0]+size[0], xy0[1]+size[1])), (0,0,0,0), None)
+            del newimdraw
+        else:
+            newim.paste(im, xy0)
+    im.close()
+    return newim
+
+def finish_picture(bigim, base_size, bbox, x0, y0, x1, y1):
     xfrac = x0 - bbox[0]
     yfrac = y0 - bbox[1]
-    ims = [Image.open(io.BytesIO(b)) for b in tiles]
-    size = ims[0].size
-    mode = 'RGB' if ims[0].mode == 'RGB' else 'RGBA'
-    newim = Image.new(mode, (
-        size[0]*(bbox[2]-bbox[0]), size[1]*(bbox[3]-bbox[1])))
-    for i, xy in enumerate(corners):
-        dx = abs(xy[0] - bbox[0])
-        dy = abs(xy[1] - bbox[1])
-        xy0 = (size[0]*dx, size[1]*dy)
-        if mode == 'RGB':
-            newim.paste(ims[i], xy0)
-        else:
-            im = ims[i].convert(mode)
-            if is_black(im):
-                newimdraw = ImageDraw.Draw(newim)
-                newimdraw.rectangle(
-                    (xy0, (xy0[0]+size[0], xy0[1]+size[1])), (0,0,0,0), None)
-                del newimdraw
-            else:
-                newim.paste(im, xy0)
-    x2 = round(size[0]*xfrac)
-    y2 = round(size[1]*yfrac)
-    imgw = round(size[0]*(x1-x0))
-    imgh = round(size[1]*(y1-y0))
-    retim = newim.crop((x2, y2, x2+imgw, y2+imgh))
-    if mode == 'RGBA':
-        if all(x == 255 for x in im.getdata(3)):
+    x2 = round(base_size[0]*xfrac)
+    y2 = round(base_size[1]*yfrac)
+    imgw = round(base_size[0]*(x1-x0))
+    imgh = round(base_size[1]*(y1-y0))
+    retim = bigim.crop((x2, y2, x2+imgw, y2+imgh))
+    if retim.mode == 'RGBA':
+        if all(x == 255 for x in bigim.getdata(3)):
             retim = retim.convert('RGB')
-    newim.close()
-    [i.close() for i in ims]
+    bigim.close()
     return retim
 
 def get_tile(url):
@@ -108,15 +116,18 @@ def draw_tile(source, lat0, lon0, lat1, lon1, zoom, filename):
         range(math.floor(y0), math.ceil(y1))))
     totalnum = len(corners)
     futures = []
-    tiles = []
     with concurrent.futures.ThreadPoolExecutor(5) as executor:
         for x, y in corners:
             futures.append(executor.submit(get_tile,
                 source.format(z=zoom, x=x, y=y)))
-        for k, fut in enumerate(concurrent.futures.as_completed(futures), 1):
+        bbox = (math.floor(x0), math.floor(y0), math.ceil(x1), math.ceil(y1))
+        bigim = None
+        base_size = [256, 256]
+        for k, (fut, corner_xy) in enumerate(zip(futures, corners), 1):
+            bigim = paste_tile(bigim, base_size, fut.result(), corner_xy, bbox)
             print('Downloaded image %d/%d' % (k, totalnum))
-        tiles = [fut.result() for fut in futures]
-    img = stitch_tiles(tiles, corners, x0, y0, x1, y1)
+    print('Saving GeoTIFF...')
+    img = finish_picture(bigim, base_size, bbox, x0, y0, x1, y1)
     imgbands = len(img.getbands())
     driver = gdal.GetDriverByName('GTiff')
     gtiff = driver.Create(filename, img.size[0], img.size[1],
