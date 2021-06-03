@@ -8,13 +8,18 @@ import itertools
 import concurrent.futures
 
 import numpy
-import requests
 from PIL import Image, ImageDraw
 from osgeo import gdal
+try:
+    import httpx
+    SESSION = httpx.Client()
+except ImportError:
+    import requests
+    SESSION = requests.Session()
 
 EARTH_EQUATORIAL_RADIUS = 6378137.0
 
-DEFAULT_TMS = 'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'
+DEFAULT_TMS = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
 
 gdal.UseExceptions()
 
@@ -82,7 +87,7 @@ def get_tile(url):
     retry = 3
     while 1:
         try:
-            r = requests.get(url, timeout=60)
+            r = SESSION.get(url, timeout=60)
             break
         except Exception:
             retry -= 1

@@ -1,7 +1,7 @@
 # tms2geotiff
 Download tiles from Tile Map Server (online maps) and make a large GeoTIFF image.
 
-Dependencies: GDAL, Pillow, numpy, requests
+Dependencies: GDAL, Pillow, numpy, requests/httpx
 
     usage: tms2geotiff.py [-h] [-s URL] [-f LAT,LON] [-t LAT,LON] [-z ZOOM] output
 

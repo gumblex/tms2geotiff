@@ -1,6 +1,4 @@
 gdal
 pillow
 numpy
-requests
-scipy
-pyproj
+httpx
