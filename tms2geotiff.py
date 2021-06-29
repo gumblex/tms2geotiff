@@ -8,7 +8,7 @@ import itertools
 import concurrent.futures
 
 import numpy
-from PIL import Image, ImageDraw
+from PIL import Image
 from osgeo import gdal
 try:
     import httpx
@@ -37,15 +37,17 @@ def deg2num(lat, lon, zoom):
     ytile = ((1 - math.log(math.tan(lat_r) + 1/math.cos(lat_r)) / math.pi) / 2 * n)
     return (xtile, ytile)
 
-def is_black(im):
-    if len(im.mode) >= 3:
-        bandn = 3
+def is_empty(im):
+    extrema = im.getextrema()
+    if len(extrema) >= 3:
+        if len(extrema) > 3 and extrema[-1] == (0, 0):
+            return True
+        for ext in extrema[:3]:
+            if ext != (0, 0):
+                return False
+        return True
     else:
-        bandn = 1
-    for band in range(bandn):
-        if any(im.getdata(band)):
-            return False
-    return True
+        return extrema[0] == (0, 0)
 
 def paste_tile(bigim, base_size, tile, corner_xy, bbox):
     if tile is None:
@@ -69,12 +71,7 @@ def paste_tile(bigim, base_size, tile, corner_xy, bbox):
     else:
         if im.mode != mode:
             im = im.convert(mode)
-        if is_black(im):
-            newimdraw = ImageDraw.Draw(newim)
-            newimdraw.rectangle(
-                (xy0, (xy0[0]+size[0], xy0[1]+size[1])), (0,0,0,0), None)
-            del newimdraw
-        else:
+        if not is_empty(im):
             newim.paste(im, xy0)
     im.close()
     return newim
