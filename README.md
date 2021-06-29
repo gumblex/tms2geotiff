@@ -1,5 +1,5 @@
 # tms2geotiff
-Download tiles from Tile Map Server (online maps) and make a large GeoTIFF image.
+Download tiles from [Tile Map Server](https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames) (online maps) and make a large GeoTIFF image.
 
 Dependencies: GDAL, Pillow, numpy, requests/httpx
 
@@ -13,7 +13,7 @@ Dependencies: GDAL, Pillow, numpy, requests/httpx
     optional arguments:
       -h, --help            show this help message and exit
       -s URL, --source URL  TMS server url (default is OpenStreetMap:
-                            https://app.gumble.pw/osm/{z}/{x}/{y}.png)
+                            https://tile.openstreetmap.org/{z}/{x}/{y}.png)
       -f LAT,LON, --from LAT,LON
                             one corner
       -t LAT,LON, --to LAT,LON
@@ -24,7 +24,7 @@ Dependencies: GDAL, Pillow, numpy, requests/httpx
 
 For example,
 
-    python3 tms2geotiff.py -s https://b.tile.openstreetmap.org/{z}/{x}/{y}.png -f 45.699,127 -t 30,148.492 -z 6 output.tiff
+    python3 tms2geotiff.py -s https://tile.openstreetmap.org/{z}/{x}/{y}.png -f 45.699,127 -t 30,148.492 -z 6 output.tiff
 
 downloads a map of Japan.
 
