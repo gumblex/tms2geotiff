@@ -48,6 +48,8 @@ def is_black(im):
     return True
 
 def paste_tile(bigim, base_size, tile, corner_xy, bbox):
+    if tile is None:
+        return bigim
     im = Image.open(io.BytesIO(tile))
     mode = 'RGB' if im.mode == 'RGB' else 'RGBA'
     size = im.size
@@ -101,6 +103,8 @@ def get_tile(url):
             retry -= 1
             if not retry:
                 raise
+    if r.status_code == 404:
+        return None
     r.raise_for_status()
     return r.content
 
