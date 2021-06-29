@@ -84,9 +84,8 @@ def finish_picture(bigim, base_size, bbox, x0, y0, x1, y1):
     imgw = round(base_size[0]*(x1-x0))
     imgh = round(base_size[1]*(y1-y0))
     retim = bigim.crop((x2, y2, x2+imgw, y2+imgh))
-    if retim.mode == 'RGBA':
-        if all(x == 255 for x in bigim.getdata(3)):
-            retim = retim.convert('RGB')
+    if retim.mode == 'RGBA' and retim.getextrema()[3] == (255, 255):
+        retim = retim.convert('RGB')
     bigim.close()
     return retim
 
