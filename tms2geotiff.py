@@ -101,6 +101,8 @@ def get_tile(url):
                 raise
     if r.status_code == 404:
         return None
+    elif not r.content:
+        return None
     r.raise_for_status()
     return r.content
 
