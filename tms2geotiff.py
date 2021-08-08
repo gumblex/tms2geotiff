@@ -19,6 +19,8 @@ except ImportError:
 
 EARTH_EQUATORIAL_RADIUS = 6378137.0
 
+Image.MAX_IMAGE_PIXELS = None
+
 DEFAULT_TMS = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
 
 gdal.UseExceptions()
