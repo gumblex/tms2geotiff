@@ -1,16 +1,23 @@
 # tms2geotiff
-Download tiles from [Tile Map Server](https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames) (online maps) and make a large GeoTIFF image.
+Download tiles from [Tile Map Server](https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames) (online maps) and make a large image.
 
-Dependencies: GDAL, Pillow, numpy, requests/httpx
+If GDAL is installed, it can write to a GeoTIFF image.
+Otherwise, it will save to a normal image with a World File for georeferencing (in EPSG:3857).
 
-    usage: tms2geotiff.py [-h] [-s URL] [-f LAT,LON] [-t LAT,LON] [-z ZOOM] output
+Dependencies: Pillow, numpy, requests/httpx, GDAL (optional)
 
-    Merge TMS tiles to a big GeoTIFF image.
+**GUI**: Directly run `python3 tms2geotiff.py` to open a GUI window.
+
+    usage: tms2geotiff.py [-h] [-s URL] [-f LAT,LON] [-t LAT,LON]
+                          [-e min_lon,min_lat,max_lon,max_lat] [-z ZOOM] [-g]
+                          [output]
+
+    Merge TMS tiles to a big image.
 
     positional arguments:
       output                output file
 
-    optional arguments:
+    options:
       -h, --help            show this help message and exit
       -s URL, --source URL  TMS server url (default is OpenStreetMap:
                             https://tile.openstreetmap.org/{z}/{x}/{y}.png)
@@ -18,9 +25,12 @@ Dependencies: GDAL, Pillow, numpy, requests/httpx
                             one corner
       -t LAT,LON, --to LAT,LON
                             the other corner
+      -e min_lon,min_lat,max_lon,max_lat, --extent min_lon,min_lat,max_lon,max_lat
+                            extent in one string (use either -e, or -f and -t)
       -z ZOOM, --zoom ZOOM  zoom level
+      -g, --gui             show GUI
 
-    The -f, -t, -z arguments are required
+    If no parameters are specified, it will open the GUI.
 
 For example,
 
