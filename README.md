@@ -1,10 +1,12 @@
 # tms2geotiff
 Download tiles from [Tile Map Server](https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames) (online maps) and make a large image.
 
-If GDAL is installed, it can write to a GeoTIFF image.
+If output is TIFF, it can write to a GeoTIFF image.
 Otherwise, it will save to a normal image with a World File for georeferencing (in EPSG:3857).
 
-Dependencies: Pillow, numpy, requests/httpx, GDAL (optional)
+Dependencies: Pillow, requests/httpx.
+
+The GDAL and numpy are no longer needed for writing GeoTIFF images.
 
 **GUI**: Directly run `python3 tms2geotiff.py` to open a GUI window.
 

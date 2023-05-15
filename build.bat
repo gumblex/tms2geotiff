@@ -1,0 +1,1 @@
+python -mnuitka --standalone --python-flag=no_site --lto=yes --mingw64 --show-progress --nofollow-import-to=numpy --nofollow-import-to=osgeo --nofollow-import-to=requests --include-package=httpx --enable-plugin=tk-inter --disable-console --windows-icon-from-ico=icon.ico -j4 tms2geotiff.py

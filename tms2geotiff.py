@@ -5,13 +5,15 @@ import io
 import os
 import re
 import math
+import time
 import argparse
-import warnings
 import itertools
 import concurrent.futures
 
-import numpy
 from PIL import Image
+from PIL import TiffImagePlugin
+Image.MAX_IMAGE_PIXELS = None
+
 try:
     import httpx
     SESSION = httpx.Client()
@@ -30,8 +32,6 @@ re_coords_split = re.compile('[ ,;]+')
 
 
 EARTH_EQUATORIAL_RADIUS = 6378137.0
-
-Image.MAX_IMAGE_PIXELS = None
 
 DEFAULT_TMS = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
 
@@ -118,7 +118,8 @@ def print_progress(progress, total, done=False):
 
 def download_extent(
     source, lat0, lon0, lat1, lon1, zoom,
-    progress_callback=print_progress
+    progress_callback=print_progress,
+    callback_interval=0.05
 ):
     x0, y0 = deg2num(lat0, lon0, zoom)
     x1, y1 = deg2num(lat1, lon1, zoom)
@@ -130,18 +131,42 @@ def download_extent(
         range(math.floor(x0), math.ceil(x1)),
         range(math.floor(y0), math.ceil(y1))))
     totalnum = len(corners)
-    futures = []
+    futures = {}
+    done_num = 0
+    progress_callback(done_num, totalnum, False)
+    last_done_num = 0
+    last_callback = time.monotonic()
+    cancelled = False
     with concurrent.futures.ThreadPoolExecutor(5) as executor:
         for x, y in corners:
-            futures.append(executor.submit(get_tile,
-                source.format(z=zoom, x=x, y=y)))
+            future = executor.submit(get_tile, source.format(z=zoom, x=x, y=y))
+            futures[future] = (x, y) 
         bbox = (math.floor(x0), math.floor(y0), math.ceil(x1), math.ceil(y1))
         bigim = None
         base_size = [256, 256]
-        for k, (fut, corner_xy) in enumerate(zip(futures, corners), 1):
-            progress_callback(k, totalnum, False)
-            bigim = paste_tile(bigim, base_size, fut.result(), corner_xy, bbox)
-            progress_callback(k, totalnum, True)
+        while futures:
+            done, not_done = concurrent.futures.wait(
+                futures.keys(), timeout=callback_interval,
+                return_when=concurrent.futures.FIRST_COMPLETED
+            )
+            for fut in done:
+                bigim = paste_tile(bigim, base_size, fut.result(), futures[fut], bbox)
+                del futures[fut]
+                done_num += 1
+            if time.monotonic() > last_callback + callback_interval:
+                try:
+                    progress_callback(done_num, totalnum, (done_num > last_done_num))
+                except TaskCancelled:
+                    for fut in futures.keys():
+                        fut.cancel()
+                    futures.clear()
+                    cancelled = True
+                    break
+                last_callback = time.monotonic()
+                last_done_num = done_num
+    if cancelled:
+        raise TaskCancelled()
+    progress_callback(done_num, totalnum, True)
 
     xfrac = x0 - bbox[0]
     yfrac = y0 - bbox[1]
@@ -159,6 +184,61 @@ def download_extent(
     pheight = abs(yp1 - yp0) / retim.size[1]
     matrix = (min(xp0, xp1), pwidth, 0, max(yp0, yp1), 0, -pheight)
     return retim, matrix
+
+
+def generate_tiffinfo(matrix):
+    ifd = TiffImagePlugin.ImageFileDirectory_v2()
+    # GeoKeyDirectoryTag
+    gkdt = [
+        1, 1,
+        0,  # GeoTIFF 1.0
+        0,  # NumberOfKeys
+    ]
+    # KeyID, TIFFTagLocation, KeyCount, ValueOffset
+    geokeys = [
+        # GTModelTypeGeoKey
+        (1024, 0, 1, 1),  # 2D projected coordinate reference system
+        # GTRasterTypeGeoKey
+        (1025, 0, 1, 1),  # PixelIsArea
+        # GTCitationGeoKey
+        (1026, 34737, 25, 0),
+        # GeodeticCitationGeoKey
+        (2049, 34737, 7, 25),
+        # GeogAngularUnitsGeoKey
+        (2054, 0, 1, 9102),  # degree
+        # ProjectedCRSGeoKey
+        (3072, 0, 1, 3857),
+        # ProjLinearUnitsGeoKey
+        (3076, 0, 1, 9001),  # metre
+    ]
+    gkdt[3] = len(geokeys)
+    ifd.tagtype[34735] = 3  # short
+    ifd[34735] = tuple(itertools.chain(gkdt, *geokeys))
+    # GeoDoubleParamsTag
+    ifd.tagtype[34736] = 12  # double
+    # GeoAsciiParamsTag
+    ifd.tagtype[34737] = 1  # byte
+    ifd[34737] = b'WGS 84 / Pseudo-Mercator|WGS 84|\x00'
+    a, b, c, d, e, f = matrix
+    # ModelPixelScaleTag
+    ifd.tagtype[33550] = 12  # double
+    # ModelTiepointTag
+    ifd.tagtype[33922] = 12  # double
+    # ModelTransformationTag
+    ifd.tagtype[34264] = 12  # double
+    # This matrix tag should not be used
+    # if the ModelTiepointTag and the ModelPixelScaleTag are already defined
+    if c == 0 and e == 0:
+        ifd[33550] = (b, -f, 0.0)
+        ifd[33922] = (0.0, 0.0, 0.0, a, d, 0.0)
+    else:
+        ifd[34264] = (
+            b, c, 0.0, a,
+            e, f, 0.0, d,
+            0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 1.0
+        )
+    return ifd
 
 
 def save_image(img, filename, matrix, **params):
@@ -181,15 +261,23 @@ def save_image(img, filename, matrix, **params):
     elif ext == '.png':
         img_params['optimize'] = True
     elif ext.startswith('.tif'):
-        img_params['compression'] = 'tiff_lzw'
+        img_params['compression'] = 'tiff_adobe_deflate'
+        img_params['tiffinfo'] = generate_tiffinfo(matrix)
     img.save(filename, **img_params)
-    with open(wld_name, 'w', encoding='utf-8') as f_wld:
-        a, b, c, d, e, f = matrix
-        f_wld.write('\n'.join(map(str, (b, e, c, f, a, d, ''))))
+    if not ext.startswith('.tif'):
+        with open(wld_name, 'w', encoding='utf-8') as f_wld:
+            a, b, c, d, e, f = matrix
+            f_wld.write('\n'.join(map(str, (b, e, c, f, a, d, ''))))
     return img
 
 
-def save_geotiff(img, filename, matrix):
+def save_geotiff_gdal(img, filename, matrix):
+    if 'GDAL_DATA' in os.environ:
+        del os.environ['GDAL_DATA']
+    if 'PROJ_LIB' in os.environ:
+        del os.environ['PROJ_LIB']
+
+    import numpy
     from osgeo import gdal
     gdal.UseExceptions()
 
@@ -209,18 +297,12 @@ def save_geotiff(img, filename, matrix):
     return img
 
 
-def save_image_auto(img, filename, matrix, use_geotiff=False, **params):
+def save_image_auto(img, filename, matrix, use_gdal=False, **params):
     ext = os.path.splitext(filename)[1].lower()
-    if ext not in ('.tif', '.tiff'):
+    if ext in ('.tif', '.tiff') and use_gdal:
+        return save_geotiff_gdal(img, filename, matrix)
+    else:
         return save_image(img, filename, matrix, **params)
-    try:
-        save_geotiff(img, filename, matrix)
-    except (ImportError, RuntimeError) as ex:
-        if use_geotiff:
-            raise
-        warnings.warn("Can't use gdal to save GeoTIFF, %s: %s" % (
-            type(ex).__name__, ex), RuntimeWarning)
-        save_image(img, filename, matrix, **params)
 
 
 class TaskCancelled(RuntimeError):
@@ -242,11 +324,11 @@ def gui():
 
     def cmd_get_save_file():
         result = root_tk.tk.eval("""tk_getSaveFile -filetypes {
-            {{PNG} {.png}}
-            {{TIFF} {.tiff}}
+            {{GeoTIFF} {.tiff}}
             {{JPG} {.jpg}}
+            {{PNG} {.png}}
             {{All Files} *}
-        } -defaultextension .png""")
+        } -defaultextension .tiff""")
         if result:
             v_output.set(result)
 
@@ -282,6 +364,7 @@ def gui():
     p_progress = ttk.Progressbar(frame, mode='determinate')
     p_progress.grid(column=0, row=6, columnspan=3, sticky='we', pady=(5, 2))
 
+    started = False
     stop_download = False
 
     def reset():
@@ -290,26 +373,34 @@ def gui():
         root_tk.update()
 
     def update_progress(progress, total, done):
-        nonlocal stop_download
-        if done:
+        nonlocal started, stop_download
+        if not started:
+            if done:
+                p_progress.configure(maximum=total, value=progress)
+            else:
+                p_progress.configure(maximum=total)
+            started = True
+        elif done:
             p_progress.configure(value=progress)
-        else:
-            p_progress.configure(maximum=total)
         root_tk.update()
         if stop_download:
             raise TaskCancelled()
 
     def cmd_download():
-        nonlocal stop_download
+        nonlocal started, stop_download
+        started = False
         stop_download = False
         b_download.configure(text='Cancel', command=cmd_cancel)
         root_tk.update()
         try:
-            args = [v_url.get().strip()]
+            url = v_url.get().strip()
+            args = [url]
             args.extend(parse_extent(v_extent.get()))
             args.append(int(v_zoom.get()))
             filename = v_output.get()
-        except (TypeError, ValueError) as ex:
+            if not all(args) or not filename:
+                raise ValueError("Empty input")
+        except (TypeError, ValueError, IndexError) as ex:
             reset()
             tkinter.messagebox.showerror(
                 title='tms2geotiff',
@@ -348,7 +439,8 @@ def gui():
         )
 
     def cmd_cancel():
-        nonlocal stop_download
+        nonlocal started, stop_download
+        started = False
         stop_download = True
         reset()
 
