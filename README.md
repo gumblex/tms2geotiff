@@ -4,25 +4,28 @@ Download tiles from [Tile Map Server](https://wiki.openstreetmap.org/wiki/Slippy
 If output is TIFF, it can write to a GeoTIFF image.
 Otherwise, it will save to a normal image with a World File for georeferencing (in EPSG:3857).
 
-Dependencies: Pillow, requests/httpx.
+* Dependencies: Pillow, requests/httpx.
+* Optional dependencies:
+  * GDAL, numpy: for writing **BigTIFF (>4GB GeoTIFF)**
+  * tqdm: progress bar
 
-The GDAL and numpy are no longer needed for writing GeoTIFF images.
+It can save the tiles directly as a **MBTiles** file now. The big image file is not required to generate.
+
 
 **GUI**: Directly run `python3 tms2geotiff.py` to open a GUI window.
 
-    usage: tms2geotiff.py [-h] [-s URL] [-f LAT,LON] [-t LAT,LON]
-                          [-e min_lon,min_lat,max_lon,max_lat] [-z ZOOM] [-g]
+    usage: tms2geotiff.py [-h] [-s URL] [-f LAT,LON] [-t LAT,LON] [-e min_lon,min_lat,max_lon,max_lat] [-z ZOOM]
+                          [-m MBTILES] [-g]
                           [output]
 
     Merge TMS tiles to a big image.
 
     positional arguments:
-      output                output file
+      output                output image file (can be omitted)
 
     options:
       -h, --help            show this help message and exit
-      -s URL, --source URL  TMS server url (default is OpenStreetMap:
-                            https://tile.openstreetmap.org/{z}/{x}/{y}.png)
+      -s URL, --source URL  TMS server url (default is OpenStreetMap: https://tile.openstreetmap.org/{z}/{x}/{y}.png)
       -f LAT,LON, --from LAT,LON
                             one corner
       -t LAT,LON, --to LAT,LON
@@ -30,6 +33,8 @@ The GDAL and numpy are no longer needed for writing GeoTIFF images.
       -e min_lon,min_lat,max_lon,max_lat, --extent min_lon,min_lat,max_lon,max_lat
                             extent in one string (use either -e, or -f and -t)
       -z ZOOM, --zoom ZOOM  zoom level
+      -m MBTILES, --mbtiles MBTILES
+                            save MBTiles file
       -g, --gui             show GUI
 
     If no parameters are specified, it will open the GUI.

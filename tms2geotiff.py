@@ -6,6 +6,7 @@ import os
 import re
 import math
 import time
+import sqlite3
 import argparse
 import itertools
 import concurrent.futures
@@ -65,6 +66,22 @@ def is_empty(im):
         return extrema[0] == (0, 0)
 
 
+def mbtiles_init(dbname):
+    db = sqlite3.connect(dbname, isolation_level=None)
+    cur = db.cursor()
+    cur.execute("BEGIN")
+    cur.execute("CREATE TABLE IF NOT EXISTS metadata (name TEXT PRIMARY KEY, value TEXT)")
+    cur.execute("CREATE TABLE IF NOT EXISTS tiles ("
+        "zoom_level INTEGER NOT NULL, "
+        "tile_column INTEGER NOT NULL, "
+        "tile_row INTEGER NOT NULL, "
+        "tile_data BLOB NOT NULL, "
+        "UNIQUE (zoom_level, tile_column, tile_row)"
+    ")")
+    cur.execute("COMMIT")
+    return db
+
+
 def paste_tile(bigim, base_size, tile, corner_xy, bbox):
     if tile is None:
         return bigim
@@ -113,11 +130,74 @@ def get_tile(url):
 
 def print_progress(progress, total, done=False):
     if done:
-        print('Downloaded image %d/%d' % (progress, total))
+        print('Downloaded image %d/%d, %.2f%%' % (progress, total, progress*100/total))
+
+
+class ProgressBar:
+    def __init__(self, use_tqdm=True):
+        self._tqdm_fn = None
+        self.tqdm_bar = None
+        if use_tqdm:
+            try:
+                import tqdm
+                self._tqdm_fn = lambda total: tqdm.tqdm(
+                    total=total, unit='img')
+            except ImportError:
+                pass
+
+    def print_progress(self, progress, total, done=False):
+        if self.tqdm_bar is None and self._tqdm_fn:
+            self.tqdm_bar = self._tqdm_fn(total)
+        if not done:
+            return
+        if self.tqdm_bar is None:
+            print_progress(progress, total, done)
+        else:
+            self.tqdm_bar.update(progress)
+
+    def close(self):
+        if self.tqdm_bar:
+            self.tqdm_bar.close()
+        else:
+            print('\nDone.')
+
+
+def mbtiles_save(db, img_data, xy, zoom, img_format):
+    if not img_data:
+        return
+    im = Image.open(io.BytesIO(img_data))
+    if im.format == 'PNG':
+        current_format = 'png'
+    elif im.format == 'JPEG':
+        current_format = 'jpg'
+    elif im.format == 'WEBP':
+        current_format = 'webp'
+    else:
+        current_format = 'image/' + im.format.lower()
+    x, y = xy
+    y = 2**zoom - 1 - y
+    cur = db.cursor()
+    if img_format is None or img_format == current_format:
+        cur.execute("REPLACE INTO tiles VALUES (?,?,?,?)", (
+            zoom, x, y, img_data))
+        return img_format or current_format
+    buf = io.BytesIO()
+    if img_format == 'png':
+        im.save(buf, 'PNG')
+    elif img_format == 'jpg':
+        im.save(buf, 'JPEG', quality=93)
+    elif img_format == 'webp':
+        im.save(buf, 'WEBP')
+    else:
+        im.save(buf, img_format.split('/')[-1].upper())
+    cur.execute("REPLACE INTO tiles VALUES (?,?,?,?)", (
+        zoom, x, y, buf.getvalue()))
+    return img_format
 
 
 def download_extent(
     source, lat0, lon0, lat1, lon1, zoom,
+    mbtiles=None, save_image=True,
     progress_callback=print_progress,
     callback_interval=0.05
 ):
@@ -127,6 +207,53 @@ def download_extent(
         x0, x1 = x1, x0
     if y0 > y1:
         y0, y1 = y1, y0
+
+    db = None
+    mbt_img_format = None
+    if mbtiles:
+        db = mbtiles_init(mbtiles)
+        cur = db.cursor()
+        cur.execute("BEGIN")
+        cur.execute("REPLACE INTO metadata VALUES ('name', ?)", (source,))
+        cur.execute("REPLACE INTO metadata VALUES ('type', 'overlay')")
+        cur.execute("REPLACE INTO metadata VALUES ('version', '1.1')")
+        cur.execute("REPLACE INTO metadata VALUES ('description', ?)", (source,))
+        cur.execute("SELECT value FROM metadata WHERE name='format'")
+        row = cur.fetchone()
+        if row and row[0]:
+            mbt_img_format = row[0]
+        else:
+            cur.execute("REPLACE INTO metadata VALUES ('format', 'png')")
+
+        lat_min = min(lat0, lat1)
+        lat_max = max(lat0, lat1)
+        lon_min = min(lon0, lon1)
+        lon_max = max(lon0, lon1)
+        bounds = [lon_min, lat_min, lon_max, lat_max]
+        cur.execute("SELECT value FROM metadata WHERE name='bounds'")
+        row = cur.fetchone()
+        if row and row[0]:
+            last_bounds = [float(x) for x in row[0].split(',')]
+            bounds[0] = min(last_bounds[0], bounds[0])
+            bounds[1] = min(last_bounds[1], bounds[1])
+            bounds[2] = max(last_bounds[2], bounds[2])
+            bounds[3] = max(last_bounds[3], bounds[3])
+        cur.execute("REPLACE INTO metadata VALUES ('bounds', ?)", (
+            ",".join(map(str, bounds)),))
+        cur.execute("REPLACE INTO metadata VALUES ('center', ?)", ("%s,%s,%d" % (
+            (lon_max + lon_min)/2, (lat_max + lat_min)/2, zoom),))
+        cur.execute("""
+            INSERT INTO metadata VALUES ('minzoom', ?)
+            ON CONFLICT(name) DO UPDATE SET value=excluded.value
+            WHERE CAST(excluded.value AS INTEGER)<CAST(metadata.value AS INTEGER)
+        """, (str(zoom),))
+        cur.execute("""
+            INSERT INTO metadata VALUES ('maxzoom', ?)
+            ON CONFLICT(name) DO UPDATE SET value=excluded.value
+            WHERE CAST(excluded.value AS INTEGER)>CAST(metadata.value AS INTEGER)
+        """, (str(zoom),))
+        cur.execute("COMMIT")
+
     corners = tuple(itertools.product(
         range(math.floor(x0), math.ceil(x1)),
         range(math.floor(y0), math.ceil(y1))))
@@ -149,10 +276,26 @@ def download_extent(
                 futures.keys(), timeout=callback_interval,
                 return_when=concurrent.futures.FIRST_COMPLETED
             )
+            cur = None
+            if mbtiles:
+                cur = db.cursor()
+                cur.execute("BEGIN")
             for fut in done:
-                bigim = paste_tile(bigim, base_size, fut.result(), futures[fut], bbox)
+                img_data = fut.result()
+                xy = futures[fut]
+                if save_image:
+                    bigim = paste_tile(bigim, base_size, img_data, xy, bbox)
+                if mbtiles:
+                    new_format = mbtiles_save(db, img_data, xy, zoom, mbt_img_format)
+                    if not mbt_img_format:
+                        cur.execute(
+                            "UPDATE metadata SET value=? WHERE name='format'",
+                            (new_format,))
+                        mbt_img_format = new_format
                 del futures[fut]
                 done_num += 1
+            if mbtiles:
+                cur.execute("COMMIT")
             if time.monotonic() > last_callback + callback_interval:
                 try:
                     progress_callback(done_num, totalnum, (done_num > last_done_num))
@@ -167,6 +310,9 @@ def download_extent(
     if cancelled:
         raise TaskCancelled()
     progress_callback(done_num, totalnum, True)
+
+    if not save_image:
+        return None, None
 
     xfrac = x0 - bbox[0]
     yfrac = y0 - bbox[1]
@@ -241,6 +387,10 @@ def generate_tiffinfo(matrix):
     return ifd
 
 
+def img_memorysize(img):
+    return img.size[0] * img.size[1] * len(img.getbands())
+
+
 def save_image(img, filename, matrix, **params):
     wld_ext = {
         '.gif': '.gfw',
@@ -261,6 +411,9 @@ def save_image(img, filename, matrix, **params):
     elif ext == '.png':
         img_params['optimize'] = True
     elif ext.startswith('.tif'):
+        if img_memorysize(img) >= 4*1024*1024*1024:
+            # BigTIFF
+            return save_geotiff_gdal(img, filename, matrix)
         img_params['compression'] = 'tiff_adobe_deflate'
         img_params['tiffinfo'] = generate_tiffinfo(matrix)
     img.save(filename, **img_params)
@@ -283,9 +436,15 @@ def save_geotiff_gdal(img, filename, matrix):
 
     imgbands = len(img.getbands())
     driver = gdal.GetDriverByName('GTiff')
+    gdal_options = ['COMPRESS=DEFLATE', 'PREDICTOR=2', 'ZLEVEL=9', 'TILED=YES']
+    if img_memorysize(img) >= 4*1024*1024*1024:
+        gdal_options.append('BIGTIFF=YES')
+    if img_memorysize(img) >= 50*1024*1024:
+        gdal_options.append('NUM_THREADS=%d' % max(1, os.cpu_count()))
+
     gtiff = driver.Create(filename, img.size[0], img.size[1],
         imgbands, gdal.GDT_Byte,
-        options=['COMPRESS=DEFLATE', 'PREDICTOR=2', 'ZLEVEL=9', 'TILED=YES'])
+        options=gdal_options)
     gtiff.SetGeoTransform(matrix)
     gtiff.SetProjection(WKT_3857)
     for band in range(imgbands):
@@ -310,10 +469,12 @@ class TaskCancelled(RuntimeError):
 
 
 def parse_extent(s):
-    coords_text = re_coords_split.split(s)
-    return (float(coords_text[1]), float(coords_text[0]),
-            float(coords_text[3]), float(coords_text[2]))
-
+    try:
+        coords_text = re_coords_split.split(s)
+        return (float(coords_text[1]), float(coords_text[0]),
+                float(coords_text[3]), float(coords_text[2]))
+    except (IndexError, ValueError):
+        raise ValueError("Invalid extent, should be: min_lon,min_lat,max_lon,max_lat")
 
 def gui():
     import tkinter as tk
@@ -331,6 +492,14 @@ def gui():
         } -defaultextension .tiff""")
         if result:
             v_output.set(result)
+
+    def cmd_get_save_mbtiles():
+        result = root_tk.tk.eval("""tk_getSaveFile -filetypes {
+            {{MBTiles} {.mbtiles}}
+            {{All Files} *}
+        } -defaultextension .tiff""")
+        if result:
+            v_mbtiles.set(result)
 
     frame = ttk.Frame(root_tk, padding=8)
     frame.grid(column=0, row=0, sticky='nsew')
@@ -361,8 +530,15 @@ def gui():
     e_output.grid(column=1, row=5, sticky='we')
     b_output = ttk.Button(frame, text='...', width=3, command=cmd_get_save_file)
     b_output.grid(column=2, row=5, sticky='we')
+    l_mbtiles = ttk.Label(frame, width=10, text="MBTiles:")
+    l_mbtiles.grid(column=0, row=6, sticky='w')
+    v_mbtiles = tk.StringVar()
+    e_mbtiles = ttk.Entry(frame, width=30, textvariable=v_mbtiles)
+    e_mbtiles.grid(column=1, row=6, sticky='we')
+    b_mbtiles = ttk.Button(frame, text='...', width=3, command=cmd_get_save_mbtiles)
+    b_mbtiles.grid(column=2, row=6, sticky='we')
     p_progress = ttk.Progressbar(frame, mode='determinate')
-    p_progress.grid(column=0, row=6, columnspan=3, sticky='we', pady=(5, 2))
+    p_progress.grid(column=0, row=7, columnspan=3, sticky='we', pady=(5, 2))
 
     started = False
     stop_download = False
@@ -398,7 +574,9 @@ def gui():
             args.extend(parse_extent(v_extent.get()))
             args.append(int(v_zoom.get()))
             filename = v_output.get()
-            if not all(args) or not filename:
+            mbtiles = v_mbtiles.get()
+            kwargs = {'mbtiles': mbtiles, 'save_image': bool(filename)}
+            if not all(args) or not any((filename, mbtiles)):
                 raise ValueError("Empty input")
         except (TypeError, ValueError, IndexError) as ex:
             reset()
@@ -411,10 +589,11 @@ def gui():
         root_tk.update()
         try:
             img, matrix = download_extent(
-                *args, progress_callback=update_progress)
+                *args, progress_callback=update_progress, **kwargs)
             b_download.configure(text='Saving...', state='disabled')
             root_tk.update()
-            save_image_auto(img, filename, matrix)
+            if filename:
+                save_image_auto(img, filename, matrix)
             reset()
         except TaskCancelled:
             reset()
@@ -464,11 +643,11 @@ def main():
         metavar='min_lon,min_lat,max_lon,max_lat',
         help="extent in one string (use either -e, or -f and -t)")
     parser.add_argument("-z", "--zoom", type=int, help="zoom level")
+    parser.add_argument("-m", "--mbtiles", help="save MBTiles file")
     parser.add_argument("-g", "--gui", action='store_true', help="show GUI")
-    parser.add_argument("output", nargs='?', help="output file")
+    parser.add_argument("output", nargs='?', help="output image file (can be omitted)")
     args = parser.parse_args()
-    if args.gui or not all(getattr(args, opt, None) for opt in
-        ('zoom', 'output')):
+    if args.gui or not getattr(args, 'zoom', None):
         gui()
         # parser.print_help()
         return 1
@@ -485,10 +664,15 @@ def main():
         parser.print_help()
         return 1
     download_args.append(args.zoom)
-    download_args.append(print_progress)
-
+    download_args.append(args.mbtiles)
+    download_args.append(bool(args.output))
+    progress_bar = ProgressBar()
+    download_args.append(progress_bar.print_progress)
     img, matrix = download_extent(*download_args)
-    save_image_auto(img, args.output, matrix)
+    progress_bar.close()
+    if args.output:
+        print("Saving image...")
+        save_image_auto(img, args.output, matrix)
     return 0
 
 
