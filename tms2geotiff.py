@@ -137,6 +137,7 @@ class ProgressBar:
     def __init__(self, use_tqdm=True):
         self._tqdm_fn = None
         self.tqdm_bar = None
+        self.tqdm_progress = 0
         if use_tqdm:
             try:
                 import tqdm
@@ -152,8 +153,10 @@ class ProgressBar:
             return
         if self.tqdm_bar is None:
             print_progress(progress, total, done)
-        else:
-            self.tqdm_bar.update(progress)
+        elif progress > self.tqdm_progress:
+            delta = progress - self.tqdm_progress
+            self.tqdm_bar.update(delta)
+            self.tqdm_progress = progress
 
     def close(self):
         if self.tqdm_bar:
